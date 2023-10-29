@@ -1,0 +1,96 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Update APT package manager repositories cache
+      become: true
+      apt:
+        update_cache: yes
+    - name: Install OpenJDK Java
+      become: yes
+      apt:
+        name: "{{ item }}"
+        state: present
+      with_items:
+        openjdk-8-jdk
+    - name: Download nexus package
+      uri:
+        url: "https://download.sonatype.com/nexus/3/nexus-3.61.0-02-unix.tar.gz"
+        dest: "/tmp"
+        status_code: 200
+    - name: Unpack Nexus download
+      become: yes
+      unarchive:
+        src: "/tmp/nexus-3.61.0-02-unix.tar.gz"
+        dest: "/opt/"
+        creates: "/opt/nexus-3.61.0-02"
+        copy: false
+    - name: creat nexus group
+      group:
+        name: "nexus"
+        state: present
+    - name: create Nexus user
+      user:
+        name: "nexus"
+        group: "nexus"
+        shell: "/bin/bash"
+        state: present
+    - name: Change permissions for '/opt/nexus'
+      file:
+        dest: "/opt/nexus-3.61.0-02/"
+        owner: 'nexus'
+        group: 'nexus'
+        recurse: true
+        mode: u=rwX,g=rX,o=rX
+    - name: Change permissions for '/opt/sonatype-work'
+      file:
+        dest: "/opt/sonatype-work"
+        owner: 'nexus'
+        group: 'nexus'
+        recurse: true
+        mode: u=rwX,g=rX,o=rX
+    - name: Create systemd service configuration
+      template:
+        src: "nexus.service"
+        dest: "/etc/systemd/system"
+    - name: Reload systemd service configuration
+      shell: 'systemctl daemon-reload'
+    - name: Enable systemd service
+      shell: 'systemctl enable nexus.service'
+    - name: Restart systemd service
+      shell: 'systemctl restart nexus.service'
+    - name: Waiting for Nexus service to be ready...
+      wait_for:
+        path: "/opt/sonatype-work/nexus3/log/nexus.log"
+        search_regex: "Started Sonatype Nexus OSS .*"
+        timeout: 1800
+    - name: Waiting for nexus to be ready...
+      wait_for:
+        port: "8081"
+        delay: 5
+    - name: Get admin credential
+      command: cat /opt/sonatype-work/nexus3/admin.password
+      register: admin_credential
+
+    ### its not working tried multiple ways not sure on this
+    - name: Create Docker Repository
+      uri:
+        url: "http://localhost:8081/service/rest/v1/repositories/docker/hosted"
+        method: POST
+        user: "admin"
+        password: "{{ admin_credential }}"
+        status_code: 201
+        body: '{"name": "my-docker-repo", "online": true, "storage": {"blobStoreName": "default", "strictContentTypeValidation": true}}'
+      register: docker_repo
+    - name: Create Docker Repository
+      uri:
+        url: "http://localhost:8081/service/rest/v1/script/raw/run"
+        method: POST
+        user: "admin"
+        password: "324a5060-bf08-4eb4-be86-0c8b98d5c9f6"
+        headers:
+          Content-Type: "text/plain"
+        status_code: 201
+        force_basic_auth: yes
+        body: {"name": "my-docker-repo", "type": "groovy", "content": "repository.createMavenHosted('maven-internal')"}
+      register: docker_repo
